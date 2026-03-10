@@ -12,6 +12,8 @@ env = JoypadSpace(env, MOVEMENT)
 
 # instructions = [6, 3, 1, 6, 3, 2]
 
+DROP_FRAMES = 80
+
 # Get the total number of pieces dropped. Takes in info[statistics]
 def total_pieces(statistics):
   total = 0
@@ -91,26 +93,19 @@ def get_board(state):
 
 # Read the observation space (the board)
 state = env.reset()
-prev_board = get_board(state)
 new_board = get_board(state)
-action_allowed = True
 for step in range(10**4):
   # Time it so you can only perform an action at the rhythm the game moves
-  if not np.array_equal(prev_board, new_board):
-    if action_allowed:
-      state, reward, done, info = env.step(env.action_space.sample())
-      action_allowed = False
-      print(new_board)
-      input("Paused here")  # To see the screen at this exact point without the program closing
-    else:
-      state, reward, done, info = env.step(0)
+  if step % DROP_FRAMES == 0:
+    action = env.action_space.sample()
   else:
-    action_allowed = True
-    state, reward, done, info = env.step(0)
-    
+    action = 0
+  state, reward, done, info = env.step(action)
   env.render()
-  prev_board = new_board
   new_board = get_board(state)
+  if action != 0:
+    print(new_board)
+    input("Paused here")  # To see the screen at this exact point without the program closing
   if done:
     tp = total_pieces(info["statistics"])
     print("Total pieces dropped:", tp)
