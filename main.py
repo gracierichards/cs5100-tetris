@@ -1,13 +1,14 @@
 # Do pip install gym-tetris
 
 import sys
+import random
+import time
+import pickle
 from nes_py.wrappers import JoypadSpace
 import gym_tetris
 from gym_tetris.actions import SIMPLE_MOVEMENT
 import matplotlib.pyplot as plt
 import numpy as np
-import random
-import pickle
 from tqdm import tqdm
 
 # Possible actions for a turn (only one turn per piece)
@@ -269,6 +270,8 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
         heights_str = heights.astype(str)
         # max_height = max(heights)
         # aggregate_height = sum(heights)
+        # Height differential
+        # differential = max(heights) - min(heights)
         # Number of lines completed with the current piece
         # lines_cleared = info["number_of_lines"] - total_lines_cleared
         # print("Lines cleared by the previous move:", lines_cleared)
@@ -276,8 +279,6 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
         # Change in score
         points = info["score"] - prev_score
         # print("Points obtained by the previous move:", points)
-        # Height differential
-        # differential = max(heights) - min(heights)
         # Number of holes in the board
         # num_holes = find_num_holes(board)
         # print("Number of holes:", num_holes)
@@ -443,11 +444,9 @@ def eval(num_episodes=100):
   # percent_not_in_Q = 100 * len(states_not_in_Q)/total_actions_taken
   # print(f"Percent of actions that were chosen randomly due to failure to find the state in the Q table: {percent_not_in_Q:.2f}%")
 
-train(render=True)
+start_time = time.time()
+train(render=False)
+print(f"Training took {time.time() - start_time} seconds")
 eval()
 
 env.close()
-
-# env.render()
-# input("Paused here")
-# sys.exit()
