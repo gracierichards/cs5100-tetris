@@ -260,7 +260,7 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
     first_iteration = True
     action_queue = []
     prev_piece = None
-    i = 0  # step counter
+    # step_num = 0
     while not done:
       if first_iteration or info["current_piece"] != prev_piece:
         # Score the quality of the previous move
@@ -356,7 +356,7 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
         state, reward, done, info = env.step(executed_action)
       else:
         state, reward, done, info = env.step(0)
-        # if i % 3 == 0:
+        # if step_num % 2 == 0:
         #   state, reward, done, info = env.step(0) # NOOP
         # else:
         #   state, reward, done, info = env.step(5) # Down
@@ -364,7 +364,7 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
       if render:
         env.render()
       board = get_board(state)
-      i += 1
+      # step_num += 1
     
     episodes_completed += 1
     epsilon = epsilon * decay_rate
@@ -385,13 +385,13 @@ def eval(num_episodes=100):
     state = env.reset()
     state, reward, done, info = env.step(0)
     board = get_board(state)
-    old_piece = False  # True for a little bit after an action has been decided for a piece, to prevent picking an action again on the same piece
+    prev_piece = None
+    action_queue = []
     while not done:
-      if piece_spawned(board) and not old_piece:
+      if info["current_piece"] != prev_piece:
         heights = get_column_heights(board)
         heights_str = heights.astype(str)
         hashed_state = ",".join(heights_str) + info["current_piece"]
-        old_piece = True
         try:
           action = np.random.choice(36, p=softmax(Q_table[hashed_state]))  # Select action using softmax over Q-values
           # Convert index to the right translation value and rotation value
@@ -401,22 +401,31 @@ def eval(num_episodes=100):
           # Fallback to random action if state not in Q-table
           mov_action, rot_action = choose_random_action(info["current_piece"])
 
+        for _ in range(20):
+          action_queue.append(5)  # DOWN
         if mov_action > 0:
           mov_action_type = 3
           for _ in range(mov_action):
-            state, reward, done, info = env.step(mov_action_type)
+            action_queue.append(mov_action_type)
         elif mov_action < 0:
           mov_action_type = 4
           for _ in range(mov_action * -1):
-            state, reward, done, info = env.step(mov_action_type)
+            action_queue.append(mov_action_type)
         # mov_action == 0 is NOOP
         for _ in range(rot_action):
-          state, reward, done, info = env.step(1)
+          action_queue.append(1)
+
+      if action_queue:
+        executed_action = action_queue.pop()
+        # print("Top row occupied?", board[0].any())
+        # print(f"Executing action {executed_action}")
+        state, reward, done, info = env.step(executed_action)
       else:
-        # Waiting for a new piece to arrive
-        if not piece_spawned(board):
-          old_piece = False
         state, reward, done, info = env.step(0)
+        # if i % 3 == 0:
+        #   state, reward, done, info = env.step(0) # NOOP
+        # else:
+        #   state, reward, done, info = env.step(5) # Down
 
       board = get_board(state)
 
