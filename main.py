@@ -6,6 +6,9 @@ import gym_tetris
 from gym_tetris.actions import SIMPLE_MOVEMENT
 import matplotlib.pyplot as plt
 import numpy as np
+import random
+import pickle
+from tqdm import tqdm
 
 # Possible actions for a turn (only one turn per piece)
 # One of:
@@ -23,8 +26,7 @@ import numpy as np
 # A
 # A A
 # A A A
-TRANSLATION_ACTIONS = ["4L", "3L", "2L", "1L", "0", "1R", "2R", "3R", "4R"]
-# Rotation actions - number from 0 to 3?
+# Represented as a translation value, -4 to 4, and a rotation value, from 0 to 3
 
 # Number of orientations each piece can have
 num_orientations = {"T": 4, "J": 4, "Z":2, "O":1, "S":2, "L":4, "I":2}
@@ -117,9 +119,11 @@ def get_column_heights(board):
     for col in [4, 5, 6]:
       bcopy[row][col] = 0
   # Finds the index of the first one for each column
-  heights = board.argmax(axis=0)
-  # Convert to 20-x for each element in heights
-  return 20 - heights
+  heights = bcopy.argmax(axis=0)
+  # Nonempty columns need to be 20 - the value. Empty columns need to be set to 0.
+  has_block = bcopy.any(axis=0)
+  heights = np.where(has_block, 20-heights, 0)
+  return heights
 
 
 """Return the column of the first hole it finds, a hole being an unfilled cell
@@ -159,6 +163,21 @@ def find_num_holes(board):
       if not start_counting and val == 1:
         start_counting = True
   return num_holes
+
+
+"""Returns the amount of translation actions to do, ranging from left 4 to right 4,
+and a random number of rotations that makes sense for the current piece"""
+def choose_random_action(cur_piece):
+  translation = random.randint(-4, 4)
+  id = cur_piece[0]
+  num_rotations = random.randint(0, num_orientations[id] - 1)
+  return (translation, num_rotations)
+
+
+# Source: provided code for Assignment 2
+def softmax(x, temp=1.0):
+	e_x = np.exp((x - np.max(x)) / temp)
+	return e_x / e_x.sum(axis=0)
 
 
 """Part 1: Perform ten trials of choosing a random action each step.
@@ -224,45 +243,202 @@ def find_num_holes(board):
 # env.close()
 
 
-"""Testing timing it to plan its set of actions one time per new piece"""
-state = env.reset()
-prev_board = get_board(state)
-new_board = get_board(state)
-total_lines_cleared = 0
-for step in range(10**4):
-  if piece_spawned(new_board) and not old_piece:
-    # Score the quality of the previous move
-    # Extract features:
-    heights = get_column_heights(new_board)
-    print("Column heights:", heights)
-    max_height = max(heights)
-    aggregate_height = sum(heights)
-    # Number of lines completed with the current piece
-    lines_cleared = info["number_of_lines"] - total_lines_cleared
-    print("Lines cleared by the previous move:", lines_cleared)
-    total_lines_cleared = info["number_of_lines"]
-    # Height differential
-    differential = max(heights) - min(heights)
-    # Make correction - to holes in the code and the doc
-    # Number of holes in the board
-    num_holes = find_num_holes(new_board)
-    print("Number of holes:", num_holes)
+"""Training"""
+def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=True):
+  # Actions are mapped by doing (translation number + 4) + (9 * rotation number) to get the index of the column
+  Q_table = {}
+  state_counts = {}
+  episodes_completed = 0
 
-    state, reward, done, info = env.step(env.action_space.sample())
-    old_piece = True
-    # print("Current piece is:", info["current_piece"])
-  else:
-    if not piece_spawned(new_board):
-      old_piece = False
-    state, reward, done, info = env.step(0)
-    
-  env.render()
-  prev_board = new_board
-  new_board = get_board(state)
-  if done:
-    tp = total_pieces(info["statistics"])
-    print("Total pieces dropped:", tp)
+  while episodes_completed < num_episodes:
     state = env.reset()
-    break
+    state, reward, done, info = env.step(0)
+    board = get_board(state)
+    # total_lines_cleared = 0
+    prev_score = 0  # Score of the previous step
+    # old_piece = False  # True for a little bit after an action has been decided for a piece, to prevent picking an action again on the same piece
+    first_iteration = True
+    action_queue = []
+    prev_piece = None
+    i = 0  # step counter
+    while not done:
+      if first_iteration or info["current_piece"] != prev_piece:
+        # Score the quality of the previous move
+        # Extract features:
+        heights = get_column_heights(board)
+        heights_str = heights.astype(str)
+        # max_height = max(heights)
+        # aggregate_height = sum(heights)
+        # Number of lines completed with the current piece
+        # lines_cleared = info["number_of_lines"] - total_lines_cleared
+        # print("Lines cleared by the previous move:", lines_cleared)
+        # total_lines_cleared = info["number_of_lines"]
+        # Change in score
+        points = info["score"] - prev_score
+        # print("Points obtained by the previous move:", points)
+        # Height differential
+        # differential = max(heights) - min(heights)
+        # Number of holes in the board
+        # num_holes = find_num_holes(board)
+        # print("Number of holes:", num_holes)
+
+        # For Q learning, the best state here would be the column heights array plus information on
+        # the shape of the current piece
+        # We can just give each piece type an ID and have it learn the best moves for each blindly
+        # State = a string of the column heights with the piece letter code appended to it
+        new_state = ",".join(heights_str) + info["current_piece"]
+        # print("state hash is", new_state)
+
+        if not first_iteration:
+          if prev_state not in Q_table:
+            Q_table[prev_state] = [0] * 36  # 36 is the number of translation + rotation combinations
+          if prev_state not in state_counts:
+            state_counts[prev_state] = [0] * 36
+          if new_state not in Q_table:
+            Q_table[new_state] = [0] * 36
+
+          action_index = (mov_action + 4) + (9 * rot_action)
+          prevQ = Q_table[prev_state][action_index]
+          alpha = 1/(1 + state_counts[prev_state][action_index])
+          # The max over all a' of Q(s', a') term
+          best_future_q = max(Q_table[new_state])
+
+          q = prevQ + alpha * (points + (gamma * best_future_q) - prevQ)
+          Q_table[prev_state][action_index] = q
+          state_counts[prev_state][action_index] += 1
+
+        first_iteration = False
+
+        prev_score = info["score"]
+        # old_piece = True
+        prev_piece = info["current_piece"]
+
+        # If less than epsilon, choose randomly
+        if random.random() < epsilon or new_state not in Q_table:
+          mov_action, rot_action = choose_random_action(info["current_piece"])
+        else:
+          # Choose the highest Q value (if present)
+          # Choose randomly among those that are tied
+          cur_state_qs = Q_table[new_state]
+          maxQ = max(cur_state_qs)
+          matching_indices = [i for i,x in enumerate(cur_state_qs) if x == maxQ]
+          i = random.choice(matching_indices)
+          # Convert index to the right translation value and rotation value
+          rot_action = i // 9
+          mov_action = i % 9 - 4
+
+        # print(f"Translation value is {mov_action}, rotation value is {rot_action}")
+        for _ in range(20):
+          action_queue.append(5)  # DOWN
+        if mov_action > 0:
+          mov_action_type = 3
+          for _ in range(mov_action):
+            action_queue.append(mov_action_type)
+        elif mov_action < 0:
+          mov_action_type = 4
+          for _ in range(mov_action * -1):
+            action_queue.append(mov_action_type)
+        # mov_action == 0 is NOOP
+        for _ in range(rot_action):
+          action_queue.append(1)
+
+        prev_state = new_state
+        # Have to wait until the next new piece arrives in order to get the reward and update the Q table
+      # else:
+      #   # Waiting for a new piece to arrive, no learning here
+      #   if not piece_spawned(board):
+      #     old_piece = False
+
+      if action_queue:
+        executed_action = action_queue.pop()
+        # print("Top row occupied?", board[0].any())
+        # print(f"Executing action {executed_action}")
+        state, reward, done, info = env.step(executed_action)
+      else:
+        state, reward, done, info = env.step(0)
+        # if i % 3 == 0:
+        #   state, reward, done, info = env.step(0) # NOOP
+        # else:
+        #   state, reward, done, info = env.step(5) # Down
+        
+      if render:
+        env.render()
+      board = get_board(state)
+      i += 1
+    
+    episodes_completed += 1
+    epsilon = epsilon * decay_rate
+
+  # Save to file
+  with open('Q_table.pickle', 'wb') as handle:
+    pickle.dump(Q_table, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+"""Evaluation"""
+def eval(num_episodes=100):
+  Q_table = np.load('Q_table.pickle', allow_pickle=True)
+  scores = []
+  line_totals = []
+  piece_totals = []
+  # Source: provided code in Assignment 2
+  for _ in tqdm(range(num_episodes)):
+    state = env.reset()
+    state, reward, done, info = env.step(0)
+    board = get_board(state)
+    old_piece = False  # True for a little bit after an action has been decided for a piece, to prevent picking an action again on the same piece
+    while not done:
+      if piece_spawned(board) and not old_piece:
+        heights = get_column_heights(board)
+        heights_str = heights.astype(str)
+        hashed_state = ",".join(heights_str) + info["current_piece"]
+        old_piece = True
+        try:
+          action = np.random.choice(36, p=softmax(Q_table[hashed_state]))  # Select action using softmax over Q-values
+          # Convert index to the right translation value and rotation value
+          rot_action = action // 9
+          mov_action = action % 9 - 4
+        except KeyError:
+          # Fallback to random action if state not in Q-table
+          mov_action, rot_action = choose_random_action(info["current_piece"])
+
+        if mov_action > 0:
+          mov_action_type = 3
+          for _ in range(mov_action):
+            state, reward, done, info = env.step(mov_action_type)
+        elif mov_action < 0:
+          mov_action_type = 4
+          for _ in range(mov_action * -1):
+            state, reward, done, info = env.step(mov_action_type)
+        # mov_action == 0 is NOOP
+        for _ in range(rot_action):
+          state, reward, done, info = env.step(1)
+      else:
+        # Waiting for a new piece to arrive
+        if not piece_spawned(board):
+          old_piece = False
+        state, reward, done, info = env.step(0)
+
+      board = get_board(state)
+
+    total_score = info["score"]
+    lines_cleared = info["number_of_lines"]
+    tp = total_pieces(info["statistics"])
+    print(f"Score: {total_score}\tLines Cleared: {lines_cleared}\tTotal Pieces Dropped: {tp}")
+
+  # avg_reward = sum(rewards)/len(rewards)
+  # print("Average reward:", avg_reward)
+  # avg_ep_len = sum(ep_lengths)/len(ep_lengths)
+  # print("Average episode length:", avg_ep_len)
+  # print("Number of states not found in the Q table:", len(states_not_in_Q))
+  # total_actions_taken = sum(ep_lengths)
+  # percent_not_in_Q = 100 * len(states_not_in_Q)/total_actions_taken
+  # print(f"Percent of actions that were chosen randomly due to failure to find the state in the Q table: {percent_not_in_Q:.2f}%")
+
+train(render=True)
+eval()
 
 env.close()
+
+# env.render()
+# input("Paused here")
+# sys.exit()
