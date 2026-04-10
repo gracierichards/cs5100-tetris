@@ -31,11 +31,12 @@ def get_piece_width(rotation):
   return widths[rotation % 4]
 
 
+# Have to multiply all actions by ten, as it appears that every 10 steps is the max rate to input actions
 def build_action_queue(target_col, target_rot):
   actions = []
 
   # Rotate first
-  actions += [1] * target_rot
+  actions += [1] * target_rot * 10
 
   # Move horizontally
   delta = target_col - 5  # Assuming the center column is 5
@@ -45,7 +46,8 @@ def build_action_queue(target_col, target_rot):
     actions += [4] * (-delta) * 10
 
   # Then drop
-  actions += [5] * 35  # spam down
+  actions += [5] * 35  # the minimum number of DOWNs needed to drop a piece from the
+                       # first row to the last row. Determined by trial and error.
 
   return actions
 
