@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 # Possible actions for a turn (only one turn per piece)
 # One of:
+# LEFT LEFT LEFT LEFT LEFT
 # LEFT LEFT LEFT LEFT
 # LEFT LEFT LEFT
 # LEFT LEFT
@@ -22,12 +23,13 @@ from tqdm import tqdm
 # RIGHT RIGHT
 # RIGHT RIGHT RIGHT
 # RIGHT RIGHT RIGHT RIGHT
+# RIGHT RIGHT RIGHT RIGHT RIGHT
 # Plus one of these for rotations:
 # NOOP
 # A
 # A A
 # A A A
-# Represented as a translation value, -4 to 4, and a rotation value, from 0 to 3
+# Represented as a translation value, -5 to 5, and a rotation value, from 0 to 3
 
 # Number of orientations each piece can have
 num_orientations = {"T": 4, "J": 4, "Z":2, "O":1, "S":2, "L":4, "I":2}
@@ -93,10 +95,6 @@ def get_board(state):
   filled_empty_grid = (board_grid > 40).astype(int)
   return filled_empty_grid
 
-# True for the first few frames after a new piece spawns. Actually just checks if two blocks in the middle
-# of the first row are filled, they should always be filled when a piece spawns
-def piece_spawned(board):
-  return board[0][4] or board[0][5]
 
 # Given a 20x10 binary board, return a list of the height of each column from left to right.
 # The "height" is just the highest filled square for that column
@@ -127,28 +125,6 @@ def get_column_heights(board):
   return heights
 
 
-"""Return the column of the first hole it finds, a hole being an unfilled cell
-without any filled cells above it. Starts looking from the bottom row, so it will
-find the deepest or at least tied for the deepest hole.
-Input: the 20x10 grid, showing which cells are filled or not in binary"""
-def find_hole(board):
-  for row in range(19, 1, -1):
-    # Ignore the top two rows, because this is calculated when the next piece spawns,
-    # and each piece can take up up to two rows
-    for col in range(10):
-      if board[row][col] == 0:
-        is_hole = True
-        r = row
-        while r >= 0:
-          if r != 0:
-            is_hole = False
-            break
-          r -= 1
-        if is_hole:
-          return col
-  # Guaranteed to find a hole in the board, since rows that are completely filled are cleared
-
-
 """Find the number of holes across the entire board. Above is the inaccurate definition of a hole,
 but this function uses the correct definition, which is that a hole is an unfilled cell with at least
 one filled cell above it"""
@@ -169,7 +145,7 @@ def find_num_holes(board):
 """Returns the amount of translation actions to do, ranging from left 4 to right 4,
 and a random number of rotations that makes sense for the current piece"""
 def choose_random_action(cur_piece):
-  translation = random.randint(-4, 4)
+  translation = random.randint(-5, 5)
   id = cur_piece[0]
   num_rotations = random.randint(0, num_orientations[id] - 1)
   return (translation, num_rotations)
@@ -246,7 +222,7 @@ def softmax(x, temp=1.0):
 
 """Training"""
 def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=True):
-  # Actions are mapped by doing (translation number + 4) + (9 * rotation number) to get the index of the column
+  # Actions are mapped by doing (translation number + 5) + (11 * rotation number) to get the index of the column
   Q_table = {}
   state_counts = {}
   episodes_completed = 0
@@ -292,13 +268,13 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
 
         if not first_iteration:
           if prev_state not in Q_table:
-            Q_table[prev_state] = [0] * 36  # 36 is the number of translation + rotation combinations
+            Q_table[prev_state] = [0] * 44  # 44 is the number of translation + rotation combinations
           if prev_state not in state_counts:
-            state_counts[prev_state] = [0] * 36
+            state_counts[prev_state] = [0] * 44
           if new_state not in Q_table:
-            Q_table[new_state] = [0] * 36
+            Q_table[new_state] = [0] * 44
 
-          action_index = (mov_action + 4) + (9 * rot_action)
+          action_index = (mov_action + 5) + (11 * rot_action)
           prevQ = Q_table[prev_state][action_index]
           alpha = 1/(1 + state_counts[prev_state][action_index])
           # The max over all a' of Q(s', a') term
@@ -325,8 +301,8 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
           matching_indices = [i for i,x in enumerate(cur_state_qs) if x == maxQ]
           i = random.choice(matching_indices)
           # Convert index to the right translation value and rotation value
-          rot_action = i // 9
-          mov_action = i % 9 - 4
+          rot_action = i // 11
+          mov_action = i % 11 - 5
 
         # print(f"Translation value is {mov_action}, rotation value is {rot_action}")
         for _ in range(20):
@@ -345,10 +321,6 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
 
         prev_state = new_state
         # Have to wait until the next new piece arrives in order to get the reward and update the Q table
-      # else:
-      #   # Waiting for a new piece to arrive, no learning here
-      #   if not piece_spawned(board):
-      #     old_piece = False
 
       if action_queue:
         executed_action = action_queue.pop()
@@ -394,15 +366,15 @@ def eval(num_episodes=100):
         heights_str = heights.astype(str)
         hashed_state = ",".join(heights_str) + info["current_piece"]
         try:
-          action = np.random.choice(36, p=softmax(Q_table[hashed_state]))  # Select action using softmax over Q-values
+          action = np.random.choice(44, p=softmax(Q_table[hashed_state]))  # Select action using softmax over Q-values
           # Convert index to the right translation value and rotation value
-          rot_action = action // 9
-          mov_action = action % 9 - 4
+          rot_action = action // 11
+          mov_action = action % 11 - 5
         except KeyError:
           # Fallback to random action if state not in Q-table
           mov_action, rot_action = choose_random_action(info["current_piece"])
 
-        for _ in range(20):
+        for _ in range(3):
           action_queue.append(5)  # DOWN
         if mov_action > 0:
           mov_action_type = 3
@@ -445,7 +417,7 @@ def eval(num_episodes=100):
   # print(f"Percent of actions that were chosen randomly due to failure to find the state in the Q table: {percent_not_in_Q:.2f}%")
 
 start_time = time.time()
-train(render=False)
+train(render=True)
 print(f"Training took {time.time() - start_time} seconds")
 eval()
 
