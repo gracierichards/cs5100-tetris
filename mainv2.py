@@ -136,7 +136,11 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
           # Among the actions done before for new_state, query the Q_table for their q values and
           # pick the action with the max value. All of this is done in this line.
           action_with_highest_q = max(state_actions[new_state], key=lambda a: Q_table[(new_state, a)])
-          target_col, target_rot = action_with_highest_q
+          # target_col, target_rot = action_with_highest_q???
+          # The rotation in action_with_highest_q has information about the piece orientation, not the number of rotation inputs needed to reach it
+          # Similarly, the final column position stored in the hashes do not give information on how many inputs are needed to reach it
+          # There is a fundamental mismatch in how this whole program is written
+          # In addition this approach is relying completely on learning based on trying different inputs, and less on learning based on piece and board positions
 
         # target_col = random.randint(0, 9)
         # target_rot = random.randint(0, 3)
