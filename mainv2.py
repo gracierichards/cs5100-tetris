@@ -11,38 +11,16 @@ import random
 env = gym_tetris.make("TetrisA-v0")
 env = JoypadSpace(env, SIMPLE_MOVEMENT)
 
-# Action meanings (SIMPLE_MOVEMENT):
-# 0: NOOP
-# 1: right
-# 2: left
-# 3: down
-# 4: A (rotate)
-# 5: B (rotate other way)
-
+possible_orientations = {'T': ['Tu', 'Tr', 'Td', 'Tl'],
+                         'J': ['Jl', 'Ju', 'Jr', 'Jd'],
+                         'Z': ['Zh', 'Zv'],
+                         'O': ['O'],
+                         'S': ['Sh', 'Sv'],
+                         'L': ['Lr', 'Ld', 'Ll', 'Lu'],
+                         'I': ['Iv', 'Ih']}
 
 def get_board(obs):
   return obs["board"] if isinstance(obs, dict) else obs
-
-
-# Have to multiply all actions by ten, as it appears that every 10 steps is the max rate to input actions
-def build_action_queue(target_col, target_rot):
-  actions = []
-
-  # Rotate first
-  actions += [1] * target_rot * 10
-
-  # Move horizontally
-  delta = target_col - 5  # Assuming the center column is 5
-  if delta > 0:
-    actions += [3] * delta * 10
-  else:
-    actions += [4] * (-delta) * 10
-
-  # Then drop
-  actions += [5] * 35  # the minimum number of DOWNs needed to drop a piece from the
-                       # first row to the last row. Determined by trial and error.
-
-  return actions
 
 
 # Given a 20x10 binary board, return a list of the height of each column from left to right.
@@ -54,6 +32,11 @@ def get_column_heights(board):
   has_block = board.any(axis=0)
   heights = np.where(has_block, 20-heights, 0)
   return heights
+
+
+# Takes in the info dictionary from gym and returns the piece id without the orientation info
+def get_current_piece(info):
+  return info["current_piece"][0]
 
 
 """Training"""
@@ -69,13 +52,12 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
     # prev_frame_board stores the board of the most recent previous frame.
     # prev_board is the board after the second to last piece was dropped
 
-    action_queue = []
     target_rot = None
     target_col = None
+    reached_target = True
 
     done = False
     first_iteration = True
-    just_finished_queue = False
     prev_piece = None
     prev_score = 0
     prev_max_height = 0
@@ -83,7 +65,7 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
     while not done:
       board = get_board(obs)
 
-      if info["current_piece"] != prev_piece or first_iteration:
+      if get_current_piece(info) != prev_piece or first_iteration:
         # This code is accessed the frame a new piece appears at the top. We want to save the state
         # of the board right before that piece appeared, to compare with much later (so save the previous frame)
         cur_board_before_spawn = prev_frame_board.copy()
@@ -104,8 +86,8 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
           # The state will be the column heights plus the piece type, the action will be the column
           # the piece was dropped in + 2d tuple with the shape of the piece (for orientation)
           prev_state = (tuple(get_column_heights(prev_board)), prev_piece)
-          new_state = (tuple(get_column_heights(cur_board_before_spawn)), info["current_piece"])
-          action_hash = (first_col_of_piece, rotation_signature)
+          new_state = (tuple(get_column_heights(cur_board_before_spawn)), get_current_piece(info))
+          action_hash = (first_col_of_piece, prev_orientation)
           if (prev_state, action_hash) not in Q_table:
             prevQ = 0
           else:
@@ -127,50 +109,46 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
           state_counts[(prev_state, action_hash)] += 1
 
         first_iteration = False
+        reached_target = False
 
         # If less than epsilon, choose randomly
         if random.random() < epsilon or new_state not in state_actions:
           target_col = random.randint(0, 9)
-          target_rot = random.randint(0, 3)
+          piece_type = get_current_piece(info)
+          target_rot = random.choice(possible_orientations[piece_type])
         else:
           # Among the actions done before for new_state, query the Q_table for their q values and
           # pick the action with the max value. All of this is done in this line.
           action_with_highest_q = max(state_actions[new_state], key=lambda a: Q_table[(new_state, a)])
-          # target_col, target_rot = action_with_highest_q???
-          # The rotation in action_with_highest_q has information about the piece orientation, not the number of rotation inputs needed to reach it
-          # Similarly, the final column position stored in the hashes do not give information on how many inputs are needed to reach it
-          # There is a fundamental mismatch in how this whole program is written
-          # In addition this approach is relying completely on learning based on trying different inputs, and less on learning based on piece and board positions
+          target_col, target_rot = action_with_highest_q
 
-        # target_col = random.randint(0, 9)
-        # target_rot = random.randint(0, 3)
-        action_queue = build_action_queue(target_col, target_rot)
-        committed = True
         prev_board = cur_board_before_spawn
 
-      if action_queue:
-        action = action_queue.pop(0)
-        if not action_queue:
-          just_finished_queue = True
+      active = (board > 0) & (cur_board_before_spawn == 0)
+      piece_cols = np.where(active)[1]
+      first_col_of_piece = int(np.min(piece_cols))  # leftmost column of the piece
+      piece_width = int(np.max(piece_cols)) - first_col_of_piece + 1
+
+      # Each frame, do a rotation if the orientation isn't correct, if it is, do a translation if the
+      # column position isn't correct
+      if not reached_target:
+        if info["current_piece"] != target_rot:
+          obs, reward, done, info = env.step(1)  # rotate clockwise
+        else:
+          if first_col_of_piece > target_col:
+            obs, reward, done, info = env.step(4)  # try left
+          elif first_col_of_piece < target_col:
+            if first_col_of_piece >= 10 - piece_width:  # can't go any further to the right
+              reached_target = True
+            else:
+              obs, reward, done, info = env.step(3)  # try right
+          else:
+            reached_target = True
       else:
-        action = 0  # NOOP
+        obs, reward, done, info = env.step(5)  # press down until new piece appears
 
-      prev_piece = info["current_piece"]
-      obs, reward, done, info = env.step(action)
-      if just_finished_queue:
-        just_finished_queue = False
-        active = (board > 0) & (cur_board_before_spawn == 0)
-        piece_rows, piece_cols = np.where(active)
-        if len(piece_cols) > 0:
-          first_col_of_piece = int(np.min(piece_cols))  # leftmost column of the piece
-          min_r, max_r = piece_rows.min(), piece_rows.max()
-          min_c, max_c = piece_cols.min(), piece_cols.max()
-          shape = active[min_r:max_r+1, min_c:max_c+1]
-          rotation_signature = tuple(map(tuple, shape.astype(int)))
-          # Representing the final orientation of the piece as a tuple of tuples
-
-      if committed and not action_queue:
-          committed = False
+      prev_piece = get_current_piece(info)
+      prev_orientation = info["current_piece"]
       prev_frame_board = board
       env.render()
         
