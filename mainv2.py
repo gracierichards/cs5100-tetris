@@ -19,8 +19,29 @@ possible_orientations = {'T': ['Tu', 'Tr', 'Td', 'Tl'],
                          'L': ['Lr', 'Ld', 'Ll', 'Lu'],
                          'I': ['Iv', 'Ih']}
 
-def get_board(obs):
-  return obs["board"] if isinstance(obs, dict) else obs
+
+# Turn the raw pixel data into a usable board state
+def get_board(state):
+  # Crops the screen to just the board
+  board_img = state[46:208, 94:175]
+  # Replace each RGB pixel with the average of the 3 color values
+  gray = board_img.mean(axis=2)
+  # Also number of pixels tall, number of pixels wide if that's easier
+  num_pixels_y, num_pixels_x = gray.shape
+  # A Tetris board is 20 by 10
+  cellh = num_pixels_y // 20
+  cellw = num_pixels_x // 10
+  board_grid = np.zeros((20, 10))
+  for r in range(20):
+    for c in range(10):
+      y1 = r * cellh
+      y2 = (r + 1) * cellh
+      x1 = c * cellw
+      x2 = (c + 1) * cellw
+      cell = gray[y1:y2, x1:x2]
+      board_grid[r, c] = cell.mean()
+  filled_empty_grid = (board_grid > 40).astype(int)
+  return filled_empty_grid
 
 
 # Given a 20x10 binary board, return a list of the height of each column from left to right.
@@ -65,7 +86,16 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
     while not done:
       board = get_board(obs)
 
-      if get_current_piece(info) != prev_piece or first_iteration:
+      if first_iteration:
+        active = board > 0
+      else:
+        active = (board > 0) & (cur_board_before_spawn == 0)
+      piece_rows, piece_cols = np.where(active)
+      first_col_of_piece = int(np.min(piece_cols))  # leftmost column of the piece
+      piece_width = int(np.max(piece_cols)) - first_col_of_piece + 1
+      spawn_detected = len(piece_rows) > 0 and np.min(piece_rows) <= 1
+
+      if spawn_detected or first_iteration:
         # This code is accessed the frame a new piece appears at the top. We want to save the state
         # of the board right before that piece appeared, to compare with much later (so save the previous frame)
         cur_board_before_spawn = prev_frame_board.copy()
@@ -87,7 +117,7 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
           # the piece was dropped in + 2d tuple with the shape of the piece (for orientation)
           prev_state = (tuple(get_column_heights(prev_board)), prev_piece)
           new_state = (tuple(get_column_heights(cur_board_before_spawn)), get_current_piece(info))
-          action_hash = (first_col_of_piece, prev_orientation)
+          action_hash = (target_col, target_rot)
           if (prev_state, action_hash) not in Q_table:
             prevQ = 0
           else:
@@ -124,11 +154,6 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
 
         prev_board = cur_board_before_spawn
 
-      active = (board > 0) & (cur_board_before_spawn == 0)
-      piece_cols = np.where(active)[1]
-      first_col_of_piece = int(np.min(piece_cols))  # leftmost column of the piece
-      piece_width = int(np.max(piece_cols)) - first_col_of_piece + 1
-
       # Each frame, do a rotation if the orientation isn't correct, if it is, do a translation if the
       # column position isn't correct
       if not reached_target:
@@ -148,10 +173,11 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
         obs, reward, done, info = env.step(5)  # press down until new piece appears
 
       prev_piece = get_current_piece(info)
-      prev_orientation = info["current_piece"]
       prev_frame_board = board
-      env.render()
+      if render:
+        env.render()
         
     episodes_completed += 1
 
-  env.close()
+train(10)
+env.close()
