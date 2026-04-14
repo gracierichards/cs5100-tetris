@@ -7,6 +7,7 @@ from nes_py.wrappers import JoypadSpace
 from gym_tetris.actions import SIMPLE_MOVEMENT
 import numpy as np
 import random
+import pickle
 
 env = gym_tetris.make("TetrisA-v0")
 env = JoypadSpace(env, SIMPLE_MOVEMENT)
@@ -57,19 +58,26 @@ def get_column_heights(board):
 
 # Takes in the info dictionary from gym and returns the piece id without the orientation info
 def get_current_piece(info):
+  if not info["current_piece"]:
+    return None
   return info["current_piece"][0]
 
 
 """Training"""
-def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=True):
-  Q_table = {}
-  state_counts = {}
-  state_actions = {}
+def train(num_episodes=10000, gamma=0.9, epsilon=1, decay_rate=0.999, render=True, debug=False, load_pickle=True):
+  if load_pickle:
+    Q_table = np.load('Q_table.pickle', allow_pickle=True)
+    state_counts = np.load('state_counts.pickle', allow_pickle=True)
+    state_actions = np.load('state_actions.pickle', allow_pickle=True)
+  else:
+    Q_table = {}
+    state_counts = {}
+    state_actions = {}
   episodes_completed = 0
   while episodes_completed < num_episodes:
     obs = env.reset()
     obs, reward, done, info = env.step(0)
-    prev_frame_board = get_board(obs)
+    prev_frame_board = np.zeros((20, 10))
     # prev_frame_board stores the board of the most recent previous frame.
     # prev_board is the board after the second to last piece was dropped
 
@@ -82,18 +90,39 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
     prev_piece = None
     prev_score = 0
     prev_max_height = 0
-
+    prev_top_row = 0
+    frame = 1
     while not done:
+      if debug:
+        if frame > 400:
+          sys.exit()
+        print("Frame:", frame)
       board = get_board(obs)
 
       if first_iteration:
         active = board > 0
       else:
         active = (board > 0) & (cur_board_before_spawn == 0)
+      # Note that part of the piece can be hidden if rotated while at the top
+      # It falls every 48 frames if down is not being held
+      # Every 2 frames if it is
+      # Two times it took 85-88 frames for a piece to fall one row after being rotated its first move
+      # First action usually takes effect on the 4th frame
+      # Another action was able to be input 16 frames later (confirmed)
+      # And then another one 6 frames later
+      # And then another one 6 frames later
+      # Piece stays on the bottom for 11 frames before the new piece spawns
       piece_rows, piece_cols = np.where(active)
-      first_col_of_piece = int(np.min(piece_cols))  # leftmost column of the piece
-      piece_width = int(np.max(piece_cols)) - first_col_of_piece + 1
-      spawn_detected = len(piece_rows) > 0 and np.min(piece_rows) <= 1
+      if debug:
+        print("Piece rows", piece_rows)
+        print("Piece cols", piece_cols)
+      spawn_detected = False
+      if len(piece_rows) != 0:
+        current_top_row = int(np.min(piece_rows))
+        # If the piece is high up when on the previous frame it was low, spawn detected
+        if current_top_row <= 2 and prev_top_row >= 5:
+            spawn_detected = True
+        prev_top_row = current_top_row
 
       if spawn_detected or first_iteration:
         # This code is accessed the frame a new piece appears at the top. We want to save the state
@@ -105,11 +134,14 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
           points = info["score"] - prev_score
           max_height = max(get_column_heights(cur_board_before_spawn))
           change_in_height = max_height - prev_max_height
+          if points < 40:
+            points = 0  # You get bonus points for holding DOWN, which should not be factored in
           if change_in_height < 0:
             reward = points
           else:
             reward = points - (change_in_height * max_height/2)
-          print(f"Points: {points}  Max Height: {max_height}  Change in Height: {change_in_height}  Reward: {reward}")
+          if points != 0:
+            print(f"Episode: {episodes_completed}  Frame: {frame}  Points: {points}  Max Height: {max_height}  Change in Height: {change_in_height}  Reward: {reward}")
           prev_score = info["score"]
           prev_max_height = max_height
 
@@ -153,31 +185,65 @@ def train(num_episodes=100, gamma=0.9, epsilon=1, decay_rate=0.99999, render=Tru
           target_col, target_rot = action_with_highest_q
 
         prev_board = cur_board_before_spawn
-
-      # Each frame, do a rotation if the orientation isn't correct, if it is, do a translation if the
-      # column position isn't correct
-      if not reached_target:
-        if info["current_piece"] != target_rot:
-          obs, reward, done, info = env.step(1)  # rotate clockwise
-        else:
-          if first_col_of_piece > target_col:
-            obs, reward, done, info = env.step(4)  # try left
-          elif first_col_of_piece < target_col:
-            if first_col_of_piece >= 10 - piece_width:  # can't go any further to the right
-              reached_target = True
-            else:
-              obs, reward, done, info = env.step(3)  # try right
-          else:
-            reached_target = True
+        obs, reward, done, info = env.step(0)
+      elif len(piece_cols) == 0:
+        obs, reward, done, info = env.step(0)
       else:
-        obs, reward, done, info = env.step(5)  # press down until new piece appears
+        # During the frame where spawn_detected is true, both the old and new piece are counted as the new piece,
+        # so if we run this code on that frame it will break
+        first_col_of_piece = int(np.min(piece_cols))  # leftmost column of the piece
+        piece_width = int(np.max(piece_cols)) - first_col_of_piece + 1
+        if debug:
+          print("Reached target:", reached_target)
+          print("Target column:", target_col)
+          print("Target orientation:", target_rot)
+          print("Current orientation:", info["current_piece"])
+        # Each frame, do a rotation if the orientation isn't correct, if it is, do a translation if the
+        # column position isn't correct
+        if not reached_target:
+          if info["current_piece"] != target_rot:
+            # Need to avoid spamming the rotate button (mysteries of the Tetris DAS system -
+            # using mod 6 doesn't work)
+            if frame % 5 == 0:
+              obs, reward, done, info = env.step(1)  # rotate clockwise
+            else:
+              obs, reward, done, info = env.step(0)
+          else:
+            if debug:
+              print("Column location:", first_col_of_piece)
+              print("Piece width:", piece_width)
+            if first_col_of_piece > target_col:
+              obs, reward, done, info = env.step(4)  # try left
+            elif first_col_of_piece < target_col:
+              if first_col_of_piece >= 10 - piece_width:  # can't go any further to the right
+                reached_target = True
+              else:
+                obs, reward, done, info = env.step(3)  # try right
+            else:
+              reached_target = True
+        else:
+          obs, reward, done, info = env.step(5)  # press down until new piece appears
 
       prev_piece = get_current_piece(info)
+      if not prev_piece:
+        obs, reward, done, info = env.step(0)
+        prev_piece = get_current_piece(info)
       prev_frame_board = board
       if render:
         env.render()
+
+      frame += 1
         
     episodes_completed += 1
+    epsilon = epsilon * decay_rate
 
-train(10)
+  # Save to file
+  with open('Q_table.pickle', 'wb') as handle:
+    pickle.dump(Q_table, handle, protocol=pickle.HIGHEST_PROTOCOL)
+  with open('state_counts.pickle', 'wb') as handle:
+    pickle.dump(state_counts, handle, protocol=pickle.HIGHEST_PROTOCOL)
+  with open('state_actions.pickle', 'wb') as handle:
+    pickle.dump(state_actions, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+train(render=False)
 env.close()
